@@ -1,4 +1,4 @@
-File name of the NHANES data used in this study
+File name of the NHANES data used in this study (excluding dietary data)
 DEMO_I,DEMO_J
 BMX_I,BMX_J
 DPQ_I,DPQ_J
