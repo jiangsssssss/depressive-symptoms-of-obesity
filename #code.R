@@ -4,13 +4,15 @@ library(tidyverse)
 library(tidyselect)
 library(dplyr)
 library(broom)
+library(devtools)
 library(dietaryindex)
-library(xgboost)
 library(caret)
+library(VIM)
+library(Boruta)
+library(glmnet)
+library(smotefamily)
 library(pROC)
-library(viridis)
-library(shapviz)
-library(ggforce)
+library(PRROC)
 library(rms)
 library(pmsampsize)
 library(randomForest)
@@ -18,14 +20,22 @@ library(purrr)
 library(boot)
 library(DescTools)
 library(dcurves)
-library(treeshap)
+library(e1071)    
+library(ggplot2)  
+library(rmda) 
+library(xgboost)
+library(ggplot2)
+library(patchwork)
+library(shapviz)
+library(fastshap)
 
 # Participants
 ## Import data(exclude dietary data)
-DATA <- read.csv("D:/Clinical prediction model/01data/clean/DATA.csv")
+DATA = read.csv("D:/Clinical prediction model/01data/clean/DATA_without_DII.csv")
 ## Import 15-16 dietary data (dietaryindex comes with 17-18 dietary data)
 setwd("D:/Clinical prediction model/01data/raw/I/")
 load("NHANES_20152016.RDA")
+NHANES_20152016 <- NHANES_20152016 
 ## Calculate Dietary Inflammation Index
 data("NHANES_20152016")
 DII_I <- DII_NHANES_FPED(FPED_PATH = NHANES_20152016$FPED, NUTRIENT_PATH = NHANES_20152016$NUTRIENT, DEMO_PATH = NHANES_20152016$DEMO, FPED_PATH2 = NHANES_20152016$FPED2, NUTRIENT_PATH2 = NHANES_20152016$NUTRIENT2)
@@ -40,12 +50,17 @@ DATA_OBS <- subset(DATA, BMXBMI > 30)
 # Predictors and Outcome
 ## Alcohol_intake
 DATA_OBS$`Alcohol_intake` <- NA
+DATA_OBS$`Alcohol_intake`[DATA_OBS$ALQ111 == 2] <- "No"
+DATA_OBS$`Alcohol_intake`[DATA_OBS$ALQ111 == 1 & DATA_OBS$ALQ121 == 0] <- "Past"
+DATA_OBS$`Alcohol_intake`[DATA_OBS$ALQ121 > 0 & DATA_OBS$ALQ121 <= 10 & DATA_OBS$ALQ142 == 0 &
+                            ((DATA_OBS$RIAGENDR == 1 & DATA_OBS$ALQ130 <= 2) | (DATA_OBS$RIAGENDR == 2 & DATA_OBS$ALQ130 <= 1))] <- "Normal"
+DATA_OBS$`Alcohol_intake`[DATA_OBS$ALQ142 > 0 & DATA_OBS$ALQ142 <= 10] <- "Over"
 DATA_OBS$`Alcohol_intake`[DATA_OBS$ALQ110 == 2] <- "No"
 DATA_OBS$`Alcohol_intake`[(DATA_OBS$ALQ110 == 1 | DATA_OBS$ALQ101 == 1) & DATA_OBS$ALQ120Q == 0] <- "Past"
 DATA_OBS$`Alcohol_intake`[DATA_OBS$ALQ120Q > 0 & DATA_OBS$ALQ120Q <= 365 & DATA_OBS$ALQ141Q == 0 &
-  ((DATA_OBS$RIAGENDR == 1 & DATA_OBS$ALQ130 <= 2) | (DATA_OBS$RIAGENDR == 2 & DATA_OBS$ALQ130 <= 1))] <- "Normal"
+                            ((DATA_OBS$RIAGENDR == 1 & DATA_OBS$ALQ130 <= 2) | (DATA_OBS$RIAGENDR == 2 & DATA_OBS$ALQ130 <= 1))] <- "Normal"
 DATA_OBS$`Alcohol_intake`[(DATA_OBS$RIAGENDR == 1 & DATA_OBS$ALQ130 > 2) |
-  (DATA_OBS$RIAGENDR == 2 & DATA_OBS$ALQ130 > 1)] <- "Over"
+                            (DATA_OBS$RIAGENDR == 2 & DATA_OBS$ALQ130 > 1)] <- "Over"
 DATA_OBS$`Alcohol_intake`[DATA_OBS$ALQ141Q > 0 & DATA_OBS$ALQ141Q <= 365] <- "Over"
 ## Smoking
 DATA_OBS <- DATA_OBS %>%
@@ -83,9 +98,9 @@ DATA_OBS$Diabetes <- apply(DATA_OBS, 1, function(row) {
   } else if (!is.na(row["DIQ070"]) && row["DIQ070"] == 1) {
     return("Yes")
   } else if (is.na(row["LBXGLU"]) && is.na(row["LBXGH"]) && is.na(row["LBXGLT"]) &&
-    (is.na(row["DIQ010"]) || row["DIQ010"] %in% c(7, 9)) &&
-    (is.na(row["DIQ050"]) || row["DIQ050"] %in% c(7, 9)) &&
-    (is.na(row["DIQ070"]) || row["DIQ070"] %in% c(7, 9))) {
+             (is.na(row["DIQ010"]) || row["DIQ010"] %in% c(7, 9)) &&
+             (is.na(row["DIQ050"]) || row["DIQ050"] %in% c(7, 9)) &&
+             (is.na(row["DIQ070"]) || row["DIQ070"] %in% c(7, 9))) {
     return(NA)
   } else {
     return("No")
@@ -138,7 +153,7 @@ DATA_OBS <- DATA_OBS %>%
 ## Race
 DATA_OBS <- DATA_OBS %>%
   mutate(Race = case_when(
-    RIDRETH1 == 1 ~ "Mexican American", RIDRETH1 == 2 ~ "Other Hispanic", RIDRETH1 == 3 ~ "Non-Hispanic White", RIDRETH1 == 4 ~ "Non-Hispanic Black", RIDRETH1 == 5 ~ "Other Race", TRUE ~ NA_character_
+    RIDRETH1 == 1 ~ "Mexican_American", RIDRETH1 == 2 ~ "Other_Hispanic", RIDRETH1 == 3 ~ "Non-Hispanic_White", RIDRETH1 == 4 ~ "Non-Hispanic_Black", RIDRETH1 == 5 ~ "Other_Race", TRUE ~ NA_character_
   ))
 ## Education
 DATA_OBS$Education <- NA
@@ -147,9 +162,9 @@ DATA_OBS$Education[DATA_OBS$DMDEDUC2 == 3] <- "completed high school"
 DATA_OBS$Education[DATA_OBS$DMDEDUC2 %in% c(4, 5)] <- "more than high school"
 ## Marital status
 DATA_OBS$Marital_status <- NA
-DATA_OBS$Marital_status[DATA_OBS$DMDMARTL %in% c(1, 6)] <- "Married / Living with partner"
-DATA_OBS$Marital_status[DATA_OBS$DMDMARTL == 5] <- "Never married"
-DATA_OBS$Marital_status[DATA_OBS$DMDMARTL %in% c(2, 3, 4)] <- "Widowed / Divorced/Separated"
+DATA_OBS$Marital_status[DATA_OBS$DMDMARTL %in% c(1, 6)] <- "Married/Living_with_partner"
+DATA_OBS$Marital_status[DATA_OBS$DMDMARTL == 5] <- "Never"
+DATA_OBS$Marital_status[DATA_OBS$DMDMARTL %in% c(2, 3, 4)] <- "Widowed/Divorced/Separated"
 ## Poverty-to-income ratio
 DATA_OBS$PIR <- NA
 DATA_OBS$PIR[DATA_OBS$INDFMPIR < 1.3] <- "<1.3"
@@ -177,20 +192,31 @@ has_na <- apply(DATA_OBS[, c("DPQ010", "DPQ020", "DPQ030", "DPQ040", "DPQ050", "
 DATA_OBS$Depression <- ifelse(has_na | has_7_or_9, NA, ifelse(sum_vars >= 10, "Yes", "No"))
 
 # Exclusion
-data_OBS <- DATA_OBS[, c(
+Data_OBS <- DATA_OBS[, c(
   "SEQN", "Gender", "Age", "BMI", "Race", "DII", "Alcohol_intake",
   "Smoking", "Hypertension", "Diabetes", "CHD", "CHF", "Angina",
-  "Heartattack", "Stroke", "OSA", "Asthma", "Arthritis", "Education",
-  "Marital_status", "PIR", "Health_insurance", "MRA", "SB",
-  "Trouble_sleeping", "Health_condition", "Seen_mental_health_professional",
-  "HS_CRP", "TC", "HDL", "Depression"
+  "Heartattack", "Stroke", "Asthma", "Arthritis", "OSA","Education",
+  "Marital_status", "PIR", "Health_insurance", "MRA", "SB", "TC", "HDL","Trouble_sleeping","Health_condition","Seen_mental_health_professional","Depression"
 )]
-missing_values <- sapply(data_OBS, function(x) sum(is.na(x)))
+Data_OBS <- Data_OBS[!is.na(Data_OBS$Depression), ]
+Data_OBS <- Data_OBS[Data_OBS$Age >= 18, ]
+Data_OBS <- Data_OBS %>% dplyr::select(-SEQN)
+missing_values <- sapply(Data_OBS, function(x) sum(is.na(x)))
 missing_values_df <- data.frame(Variable = names(missing_values), MissingValues = missing_values)
 print(missing_values_df)
-data_OBS <- data_OBS[data_OBS$Age >= 18, ]
-data_OBS <- na.omit(data_OBS)
-data_OBS <- data_OBS %>% select(-SEQN)
+# Interpolation of missing data
+factor_cols <- c( "Gender","Race", "Alcohol_intake",
+                  "Smoking", "Hypertension", "Diabetes", "CHD", "CHF", "Angina",
+                  "Heartattack", "Stroke", "Asthma", "Arthritis", "OSA","Education",
+                  "Marital_status", "PIR", "Health_insurance", "MRA", "SB", "Trouble_sleeping","Health_condition",
+                  "Seen_mental_health_professional","Depression")
+Data_OBS[factor_cols] <- lapply(Data_OBS[factor_cols], as.factor)
+numeric_cols <- c("Age", "BMI", "DII", "TC", "HDL")
+vars_to_impute <- names(Data_OBS)[names(Data_OBS) != "Depression"]
+data_OBS <- kNN(Data_OBS, variable = vars_to_impute, k = 5)
+summary(data_OBS) 
+data_OBS <- data_OBS[, -c(30:57)]
+str(data_OBS)
 
 # Sample description
 data_OBS <- data_OBS %>%
@@ -200,8 +226,8 @@ data_OBS <- data_OBS %>%
     Marital_status, PIR, Health_insurance, MRA, SB, Smoking, Arthritis,
     Health_condition, Seen_mental_health_professional, Depression
   ), as.factor))
-categorical_vars <- c("Gender", "Race", "Alcohol_intake", "Smoking", "Hypertension", "Diabetes", "CHD", "CHF", "Angina", "Heartattack", "Stroke", "OSA", "Asthma", "Arthritis", "Education", "Marital_status", "PIR", "Health_insurance", "MRA", "SB", "Trouble_sleeping", "Seen_mental_health_professional", "Health_condition")
-continuous_vars <- c("Age", "BMI", "DII", "TC", "HDL", "HS_CRP")
+categorical_vars <- c("Gender", "Race", "Alcohol_intake", "Smoking", "Hypertension", "Diabetes", "CHD", "OSA","CHF", "Angina", "Heartattack", "Stroke", "Asthma", "Arthritis","Health_condition", "Trouble_sleeping","Education", "Marital_status", "PIR", "Health_insurance", "Seen_mental_health_professional","MRA", "SB")
+continuous_vars <- c("Age", "BMI", "DII", "TC", "HDL")
 calc_mean_ci <- function(data, variable) {
   est <- mean(data, na.rm = TRUE)
   se <- sd(data, na.rm = TRUE) / sqrt(length(data))
@@ -255,209 +281,628 @@ for (var in categorical_vars) {
 }
 print(Sample_description_results)
 
-# Feature Selection
-## XGBoost
-### Data preparation
-set.seed(42)
-trains <- createDataPartition(y = data_OBS$Depression, p = 0.7, list = F)
-data_train <- data_OBS[trains, ]
-data_test <- data_OBS[-trains, ]
-table(data_train$Depression)
-table(data_test$Depression)
-dvfunc <- dummyVars(~., data = data_train[, 1:29], fullRank = T)
-data_trainx <- predict(dvfunc, newdata = data_train[, 1:29])
-data_trainy <- ifelse(data_train$Depression == "Yes", "1", "0")
-data_testx <- predict(dvfunc, newdata = data_test[, 1:29])
-data_testy <- ifelse(data_test$Depression == "Yes", "1", "0")
-dtrain <- xgb.DMatrix(data = data_trainx, label = data_trainy)
-dtest <- xgb.DMatrix(data = data_testx, label = data_testy)
-### Modeling
-params <- list(
-  objective = "binary:logistic",
-  eval_metric = "auc",
-  eta = 0.01,
-  max_depth = 4,
-  subsample = 0.8,
-  colsample_bytree = 0.8
-)
+
+#Feature selection
+##Boruta
+data_OBS_log <- data_OBS[, c("Gender", "Alcohol_intake", "Smoking", "Diabetes", "Hypertension","CHF", "CHD",
+                             "Angina", "Stroke", "Asthma", "Arthritis", 
+                             "Education", "Marital_status", "PIR", "MRA", "OSA", "Health_condition","Trouble_sleeping","Seen_mental_health_professional",
+                             "BMI","DII", "Depression")]
+data_OBS_log <- data_OBS_log %>%
+  mutate(across(c(
+    Gender, Alcohol_intake, Hypertension, Diabetes, CHD,
+    CHF, Angina, Stroke, OSA, Asthma, Trouble_sleeping, Education,
+    Marital_status, PIR, MRA, Smoking, Arthritis,
+    Health_condition, Seen_mental_health_professional, Depression
+  ), as.factor))
+str(data_OBS_log)
 set.seed(123)
-cv <- xgb.cv(
-  params = params,
-  data = dtrain,
-  nrounds = 1000,
-  nfold = 10,
-  early_stopping_rounds = 10
-)
-best_iter <- which.max(cv$evaluation_log$test_auc_mean)
-model <- xgb.train(
-  params = params,
-  data = dtrain, nrounds = best_iter
-)
-testpredprob <- predict(model, dtest)
-roc_xgb <- roc(data_test$Depression, testpredprob)
-auc <- auc(roc_xgb)
-ROC_of_XGBoost <- ggroc(roc_xgb, legacy.axes = TRUE, size = 1, color = "#69b3a2") +
-  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "grey") +
-  theme_bw() + annotate(geom = "text", label = paste0("AUC in test set:", round(auc, 3)), x = 0.7, y = 0.05)
-ROC_of_XGBoost
-### Variables importance
-importance <- xgb.importance(model = model)
-importance <- importance[order(importance$Gain,
-  decreasing = TRUE
-), ][1:10, 1:2]
-Variables_importance_plot_of_XGBoost <- ggplot(importance, aes(y = Gain, x = reorder(Feature, Gain))) +
-  geom_bar(stat = "identity", fill = "#69b3a2", alpha = 0.8, width = 0.6) +
-  scale_fill_viridis() +
-  labs(y = "Importance Score", x = "") +
-  coord_flip() +
-  theme_bw() +
-  theme(axis.text.y = element_text(angle = 0, hjust = 0.9))
-Variables_importance_plot_of_XGBoost
-importance$Feature
-Feature1 <- c(
-  "Seen_mental_health_professional", "DII", "Health_condition",
-  "Trouble_sleeping", "BMI", "TC", "Age", "Arthritis",
-  "HS_CRP", "HDL"
-)
-## SHAP
-shap_long_hd <- shapviz(model, X_pred = data_trainx)
-sv_importance(shap_long_hd) + theme_bw()
-Feature2 <- c(
-  "Seen_mental_health_professional", "DII", "Health_condition",
-  "Trouble_sleeping", "BMI", "TC", "Age", "Arthritis",
-  "HS_CRP", "HDL"
-)
-## Boruta
-library(Boruta)
-set.seed(1)
-feature.selection <- Boruta(Depression ~ ., data = data_OBS, doTrace = 1)
+trains <- createDataPartition(y = data_OBS_log$Depression, p = 0.7, list = F)
+data_OBS_log_train <- data_OBS_log[trains, ]
+data_OBS_log_test <- data_OBS_log[-trains, ]
+table(data_OBS_log_train$Depression)
+table(data_OBS_log_test$Depression)
+set.seed(123)
+feature.selection <- Boruta(Depression ~ ., data = data_OBS_log_train, doTrace = 1,maxRuns = 100)
 table(feature.selection$finalDecision)
 par(mar = c(7.5, 4, 0.5, 2) + 0.1)
-plot(feature.selection, cex.axis = 0.5, las = 3, xlab = "")
-Feature3 <- getSelectedAttributes(feature.selection)
-Feature3
-## Intersection
-intersection <- Reduce(intersect, list(Feature1, Feature2, Feature3))
-print(intersection)
-data_feature <- data_OBS[, c(intersection, "Depression")]
+plot(feature.selection, cex.axis = 0.50, las = 3, xlab = "")
+Feature2 <- getSelectedAttributes(feature.selection)
+Feature2
 
-# Modeling
-## ample size estimation
-pmsampsize(type = "b", csrsquared = 0.072, parameters = 7, prevalence = 0.1, seed = 123)
+
+#Modeling
 ## Data preparation
-data_feature$Seen_mental_health_professional <- ifelse(data_feature$Seen_mental_health_professional == "Yes", 1, 0)
-data_feature$Health_condition <- ifelse(data_feature$Health_condition == "Yes", 1, 0)
-data_feature$Trouble_sleeping <- ifelse(data_feature$Trouble_sleeping == "Yes", 1, 0)
-data_feature$Arthritis <- ifelse(data_feature$Arthritis == "Yes", 1, 0)
-data_feature$Depression <- ifelse(data_feature$Depression == "Yes", 1, 0)
-data_feature <- data_feature %>% mutate(across(c(Depression), as.factor))
-str(data_feature)
+data_simplify <- data_OBS_log[, c("DII","Health_condition",
+                                  "Seen_mental_health_professional", "Trouble_sleeping",
+                                  "Marital_status", "Gender","Alcohol_intake","Smoking",
+                                  "Depression")]
+vars <- c("DII","Depression")
+dummy_matrix <- model.matrix(~ -1 + Alcohol_intake + Gender + Smoking + 
+                               Marital_status + Health_condition + 
+                               Trouble_sleeping + Seen_mental_health_professional, 
+                             data = data_simplify)
+data_matrix <- cbind(dummy_matrix, data_simplify[, vars])
+data_simplify <- as.data.frame(data_matrix)
+data_simplify$Depression <- ifelse(data_simplify$Depression == "Yes", 1, 0)
+names(data_simplify)[names(data_simplify) == "Marital_statusNever"] <- "Marital_statusNever_married"
+names(data_simplify)[names(data_simplify) == "Marital_statusWidowed/Divorced/Separated"] <- "Marital_status_Widowed_Divorced_Separated"
+data_simplify <- data_simplify %>% mutate(across(c(Depression), as.factor))
+data_simplify$Alcohol_intakeNo <- NULL
 set.seed(123)
-trains <- createDataPartition(y = data_feature$Depression, p = 0.7, list = F)
-data_feature_train <- data_feature[trains, ]
-data_feature_test <- data_feature[-trains, ]
-table(data_feature_train$Depression)
-table(data_feature_test$Depression)
-## Modeling Random Forests
+trains <- createDataPartition(y = data_simplify$Depression, p = 0.7, list = F)
+data_simplify_train <- data_simplify[trains, ]
+data_simplify_test <- data_simplify[-trains, ]
+table(data_simplify_train$Depression)
+table(data_simplify_test$Depression)
+str(data_simplify_train)
+##Sample size calculation
+pmsampsize(type = "b",csrsquared = 0.072,parameters = 12,prevalence = 0.1,seed = 123)
+##upsampling
 set.seed(123)
-rf.OBS <- randomForest(Depression ~ ., data = data_feature_train)
-plot(rf.OBS)
-which.min(rf.OBS$err.rate[, 1])
-### ntree = 131
-set.seed(123)
-rf.OBS.2 <- randomForest(Depression ~ ., data = data_feature_train, ntree = 131)
-rf.OBS.2
-### ROC of training set
-rf.OBS.trainprob <- predict(rf.OBS.2, newdata = data_feature_train, type = "prob")
-trainroc <- roc(response = data_feature_train$Depression, predictor = rf.OBS.trainprob[, 2])
-ROC_of_Training_set <- ggroc(trainroc, legacy.axes = TRUE, size = 1, color = "black") +
-  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "grey") +
-  theme_bw() + annotate(geom = "text", label = paste0("AUC in training set: ", round(auc(trainroc), 3)), x = 0.7, y = 0.05)
-ROC_of_Training_set
-### ROC of test set
-rf.OBS.testprob <- predict(rf.OBS.2, newdata = data_feature_test, type = "prob")
-testroc <- roc(response = data_feature_test$Depression, predictor = rf.OBS.testprob[, 2])
-ROC_of_Test_set <- ggroc(testroc, legacy.axes = TRUE, size = 1, color = "black") +
-  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "grey") + # 参考线
-  theme_bw() + annotate(geom = "text", label = paste0("AUC in test set: ", round(auc(testroc), 3)), x = 0.7, y = 0.05)
-ROC_of_Test_set
-### Calibration curve of training set
-y_train <- as.numeric(data_feature_train$Depression) - 1
-prob.rf.train <- as.numeric(predict(rf.OBS.2, data_feature_train, type = "prob")[, 2])
-breaks <- seq(0, 1, by = 0.1)
-ypb.rf.train <- cut(prob.rf.train, breaks = breaks, include.lowest = TRUE, labels = FALSE)
-am.rf.train <- tapply(y_train, ypb.rf.train, mean)
-pm.rf.train <- tapply(prob.rf.train, ypb.rf.train, mean)
-df.rf.train <- data.frame(pm = pm.rf.train, am = am.rf.train)
-ggplot(df.rf.train, aes(x = pm, y = am)) +
-  geom_point() +
-  geom_line() +
-  geom_abline(intercept = 0, slope = 1, color = "black", linetype = "dashed") +
-  xlab("Mean Predicted Probability") +
-  ylab("True Fraction of Positives") +
-  theme(plot.title = element_text(hjust = 0.5)) +
-  theme_bw() +
-  scale_y_continuous(limits = c(0, 1))
-### Calibration curve of test set
-y_test <- as.numeric(data_feature_test$Depression) - 1
-prob.rf.test <- as.numeric(predict(rf.OBS.2, data_feature_test, type = "prob")[, 2])
-breaks <- seq(0, 1, by = 0.1)
-ypb.rf.test <- cut(prob.rf.test, breaks = breaks, include.lowest = TRUE, labels = FALSE)
-am.rf.test <- tapply(y_test, ypb.rf.test, mean)
-pm.rf.test <- tapply(prob.rf.test, ypb.rf.test, mean)
-df.rf.test <- data.frame(pm = pm.rf.test, am = am.rf.test)
-ggplot(df.rf.test, aes(x = pm, y = am)) +
-  geom_point() +
-  geom_line() +
-  geom_abline(intercept = 0, slope = 1, color = "black", linetype = "dashed") +
-  xlab("Mean Predicted Probability") +
-  ylab("True Fraction of Positives") +
-  theme(plot.title = element_text(hjust = 0.5)) +
-  theme_bw() +
-  scale_y_continuous(limits = c(0, 1))
-### AUC and brier score
-boot_auc <- function(data, indices) {
-  d <- data[indices, ]
-  pred <- predict(rf.OBS.2, newdata = d, type = "prob")[, 2]
-  roc_obj <- roc(response = d$Depression, predictor = pred)
-  return(auc(roc_obj))
-}
-set.seed(123)
-boot_train <- boot(data_feature_train, boot_auc, R = 1000)
-ci_train <- boot.ci(boot_train, type = "perc")
-set.seed(123)
-boot_test <- boot(data_feature_test, boot_auc, R = 1000)
-ci_test <- boot.ci(boot_test, type = "perc")
-boot_brier <- function(data, indices) {
-  d <- data[indices, ]
-  pred <- predict(rf.OBS.2, newdata = d, type = "prob")[, 2]
-  return(BrierScore(as.numeric(d$Depression) - 1, pred, scaled = FALSE))
-}
-set.seed(123)
-boot_brier_train <- boot(data_feature_train, boot_brier, R = 1000)
-ci_brier_train <- boot.ci(boot_brier_train, type = "perc")
-set.seed(123)
-boot_brier_test <- boot(data_feature_test, boot_brier, R = 1000)
-ci_brier_test <- boot.ci(boot_brier_test, type = "perc")
-cat("Training set AUC: ", auc(trainroc), "\n")
-cat("Training set AUC 95% CI: [", ci_train$percent[4], ", ", ci_train$percent[5], "]\n")
-cat("Test set AUC: ", auc(testroc), "\n")
-cat("Test set AUC 95% CI: [", ci_test$percent[4], ", ", ci_test$percent[5], "]\n")
-cat("Training set Brier Score: ", BrierScore(y_train, prob.rf.train, scaled = FALSE), "\n")
-cat("Training set Brier Score 95% CI: [", ci_brier_train$percent[4], ", ", ci_brier_train$percent[5], "]\n")
-cat("Test set Brier Score: ", BrierScore(y_test, prob.rf.test, scaled = FALSE), "\n")
-cat("Test set Brier Score 95% CI: [", ci_brier_test$percent[4], ", ", ci_brier_test$percent[5], "]\n")
-### Decision curves analysis
-data_feature_train$train_prob <- rf.OBS.trainprob[, 2]
-data_feature_test$test_prob <- rf.OBS.testprob[, 2]
-train_dca_result <- dca(Depression ~ train_prob, data = data_feature_train)
-test_dca_result <- dca(Depression ~ test_prob, data = data_feature_test)
-plot(train_dca_result, colorize = TRUE)
-plot(test_dca_result, colorize = TRUE)
+smote_result <- SMOTE(X = data_simplify_train[, -13],target = data_simplify_train$Depression,
+                      K = 5,dup_size = 3)
+balanced_data <- smote_result$data
+colnames(balanced_data)[13] <- "Depression"
+table(balanced_data$Depression)
+balanced_data <- balanced_data %>% mutate(across(c(Depression), as.factor))
+table(data_OBS$Depression)
 
-# Model interpretation by SHAP
-unified_model <- randomForest.unify(rf.OBS.2, data_feature_train)
-shaps <- treeshap(unified_model, data_feature_train)
-shp <- shapviz(shaps)
-sv_importance(shp, kind = "beeswarm") + theme_bw()
-sv_dependence(shp, v = "DII", color_var = NULL) + theme_bw()
+
+##Random Forests
+###Imbalance data
+set.seed(123)
+param_grid <- expand.grid(mtry = 3:5,ntree = seq(200, 500, by = 50))
+folds <- createFolds(data_simplify_train$Depression,k = 10,list = TRUE,returnTrain = FALSE)
+results <- data.frame()
+for (i in 1:nrow(param_grid)) {
+  current_mtry <- param_grid$mtry[i]
+  current_ntree <- param_grid$ntree[i]
+  
+  fold_aucs <- numeric(10)  
+  
+  for (fold in 1:10) {
+    val_indices <- folds[[fold]]
+    train_data <- data_simplify_train[-val_indices, ]
+    val_data <- data_simplify_train[val_indices, ]
+    
+    
+    model <- randomForest(
+      Depression ~ .,
+      data = train_data,
+      mtry = current_mtry,
+      ntree = current_ntree
+    )
+    
+    
+    pred_probs <- predict(model, val_data, type = "prob")[, 2]  
+    
+    
+    roc_obj <- roc(
+      response = val_data$Depression,
+      predictor = pred_probs,
+      levels = levels(val_data$Depression)  
+    )
+    fold_aucs[fold] <- auc(roc_obj)
+  }
+  
+
+  mean_auc <- mean(fold_aucs)
+  
+
+  results <- rbind(results, data.frame(
+    mtry = current_mtry,
+    ntree = current_ntree,
+    auc = mean_auc
+  ))
+  
+  cat(sprintf("mtry=%d, ntree=%d | Mean AUC=%.4f\n", current_mtry, current_ntree, mean_auc))
+}
+results_sorted <- results[order(-results$auc), ]
+best_params_RF <- results_sorted[1, ]
+print(best_params_RF)
+set.seed(123)
+rf.OBS.2 <- randomForest(Depression ~ .,data = data_simplify_train,mtry = best_params_RF$mtry,ntree = best_params_RF$ntree)
+print(rf.OBS.2)
+rf.OBS.trainprob <- predict(rf.OBS.2, newdata = data_simplify_train, type = "prob")[, 2]
+rf_train_roc <- roc(response = data_simplify_train$Depression, predictor = rf.OBS.trainprob)
+rf.OBS.testprob <- predict(rf.OBS.2, newdata = data_simplify_test, type = "prob")[, 2]
+rf_test_roc <- roc(response = data_simplify_test$Depression, predictor = rf.OBS.testprob)
+###Balance data
+set.seed(123)
+param_grid <- expand.grid(mtry = 3:5,ntree = seq(200, 500, by = 50))
+folds <- createFolds(balanced_data$Depression,k = 10,list = TRUE,returnTrain = FALSE)
+results <- data.frame()
+for (i in 1:nrow(param_grid)) {
+  current_mtry <- param_grid$mtry[i]
+  current_ntree <- param_grid$ntree[i]
+  
+  fold_aucs <- numeric(10)  
+  
+  for (fold in 1:10) {
+    val_indices <- folds[[fold]]
+    train_data <- balanced_data[-val_indices, ]
+    val_data <- balanced_data[val_indices, ]
+    
+
+    model <- randomForest(
+      Depression ~ .,
+      data = train_data,
+      mtry = current_mtry,
+      ntree = current_ntree
+    )
+    
+
+    pred_probs <- predict(model, val_data, type = "prob")[, 2]  
+    
+
+    roc_obj <- roc(
+      response = val_data$Depression,
+      predictor = pred_probs,
+      levels = levels(val_data$Depression) 
+    )
+    fold_aucs[fold] <- auc(roc_obj)
+  }
+  
+
+  mean_auc <- mean(fold_aucs)
+  
+
+  results <- rbind(results, data.frame(
+    mtry = current_mtry,
+    ntree = current_ntree,
+    auc = mean_auc
+  ))
+  
+  cat(sprintf("mtry=%d, ntree=%d | Mean AUC=%.4f\n", current_mtry, current_ntree, mean_auc))
+}
+results_sorted <- results[order(-results$auc), ]
+best_params_RF_balanced <- results_sorted[1, ]
+print(best_params_RF_balanced)
+set.seed(123)
+rf.OBS.2_balanced <- randomForest(Depression ~ .,data = balanced_data,mtry = best_params_RF$mtry,ntree = best_params_RF$ntree)
+print(rf.OBS.2_balanced)
+rf.OBS_balanced_trainprob <- predict(rf.OBS.2_balanced, newdata = balanced_data, type = "prob")[, 2]
+rf_train_balanced_roc <- roc(response = balanced_data$Depression, predictor = rf.OBS_balanced_trainprob)
+rf.OBS_balanced_testprob <- predict(rf.OBS.2_balanced, newdata = data_simplify_test, type = "prob")[, 2]
+rf_test_balanced_roc <- roc(response = data_simplify_test$Depression, predictor = rf.OBS_balanced_testprob)
+
+##SVM
+###Imbalance data
+continuous_vars <- c("DII")
+categorical_vars <- c("Alcohol_intakeNormal","Alcohol_intakeOver","Alcohol_intakePast","GenderMale","SmokingNow","SmokingPast",
+                      "Marital_statusNever_married","Marital_status_Widowed_Divorced_Separated",
+                      "Health_conditionYes","Trouble_sleepingYes","Seen_mental_health_professionalYes")
+preProc <- preProcess(data_simplify_train[, continuous_vars, drop = FALSE], method = c("center", "scale"))
+x_train_cont_scaled <- predict(preProc, data_simplify_train[, continuous_vars, drop = FALSE])
+x_test_cont_scaled <- predict(preProc, data_simplify_test[, continuous_vars, drop = FALSE])
+x_train_scaled <- cbind(x_train_cont_scaled, data_simplify_train[, categorical_vars])
+x_test_scaled <- cbind(x_test_cont_scaled, data_simplify_test[, categorical_vars])
+x_train <- as.matrix(x_train_scaled)
+x_test <- as.matrix(x_test_scaled)
+y_train <- data_simplify_train$Depression
+y_test <- data_simplify_test$Depression
+class_weights <- c("1" = 1, "0" = 8) 
+cost_values <- 10^seq(-1, 2, length = 5)  
+gamma_values <- 10^seq(-3, 1, length = 5) 
+param_grid <- expand.grid(cost = cost_values, gamma = gamma_values)
+set.seed(123)
+folds <- createFolds(data_simplify_train$Depression, k = 10, list = TRUE, returnTrain = FALSE)
+results <- data.frame()
+for (i in 1:nrow(param_grid)) {
+  current_cost <- param_grid$cost[i]
+  current_gamma <- param_grid$gamma[i]
+  
+  fold_aucs <- numeric(10) 
+  for (fold in 1:10) {
+    val_indices <- folds[[fold]]
+    train_indices <- setdiff(1:nrow(data_simplify_train), val_indices)
+    train_data <- data_simplify_train[train_indices, ]
+    val_data <- data_simplify_train[val_indices, ]
+    preProc <- preProcess(train_data[, continuous_vars, drop = FALSE], method = c("center", "scale"))
+    xtrain_cont_scaled <- predict(preProc, train_data[, continuous_vars, drop = FALSE])
+    x_val_cont_scaled <- predict(preProc, val_data[, continuous_vars, drop = FALSE])
+    xtrain_scaled <- cbind(xtrain_cont_scaled, train_data[, categorical_vars])
+    x_val_scaled <- cbind(x_val_cont_scaled, val_data[, categorical_vars])
+    xtrain_mat <- as.matrix(xtrain_scaled)
+    x_val_mat <- as.matrix(x_val_scaled)
+    ytrain_fold <- as.factor(train_data$Depression)
+    y_val_fold <- as.factor(val_data$Depression)
+    svm_model <- svm(
+      x = xtrain_mat,
+      y = ytrain_fold,
+      kernel = "radial",
+      probability = TRUE,
+      class.weights = class_weights,  
+      cost = current_cost,
+      gamma = current_gamma
+    )
+    val_probs <- attr(predict(svm_model, x_val_mat, probability = TRUE), "prob")[, "1"]  
+    roc_obj <- roc(response = y_val_fold, predictor = val_probs, levels = levels(y_val_fold))
+    fold_aucs[fold] <- auc(roc_obj)
+  }
+  mean_auc <- mean(fold_aucs)
+  results <- rbind(results, data.frame(
+    cost = current_cost,
+    gamma = current_gamma,
+    auc = mean_auc
+  ))
+  
+  cat(sprintf("cost=%.3f, gamma=%.3f | Mean AUC=%.4f\n", current_cost, current_gamma, mean_auc))
+}
+results_sorted <- results[order(-results$auc), ]
+best_params_svm <- results_sorted[1, ]
+print(best_params_svm)
+set.seed(123)
+svm_model <- svm(
+  x = x_train_scaled,
+  y = as.factor(y_train),
+  kernel = "radial",
+  probability = TRUE,
+  class.weights = class_weights,
+  cost = best_params_svm$cost,
+  gamma = best_params_svm$gamma
+)
+svm_train_probs <- attr(predict(svm_model, x_train, probability = TRUE), "prob")[, 2]
+svm_test_probs <- attr(predict(svm_model, x_test, probability = TRUE), "prob")[, 2]
+svm_train_roc <- roc(y_train, svm_train_probs)
+svm_test_roc <- roc(y_test, svm_test_probs)
+###Balance data
+continuous_vars <- c("DII")
+categorical_vars <- c("Alcohol_intakeNormal","Alcohol_intakeOver","Alcohol_intakePast","GenderMale","SmokingNow","SmokingPast",
+                      "Marital_statusNever_married","Marital_status_Widowed_Divorced_Separated",
+                      "Health_conditionYes","Trouble_sleepingYes","Seen_mental_health_professionalYes")
+preProc <- preProcess(balanced_data[, continuous_vars, drop = FALSE], method = c("center", "scale"))
+balanced_x_train_cont_scaled <- predict(preProc, balanced_data[, continuous_vars, drop = FALSE])
+balanced_x_train_scaled <- cbind(balanced_x_train_cont_scaled, balanced_data[, categorical_vars])
+balanced_x_train <- as.matrix(balanced_x_train_scaled)
+balanced_y_train <- balanced_data$Depression
+class_weights <- c("1" = 1, "0" = 2)
+cost_values <- 10^seq(-1, 2, length = 5)  
+gamma_values <- 10^seq(-3, 1, length = 5) 
+param_grid <- expand.grid(cost = cost_values, gamma = gamma_values)
+set.seed(123)
+folds <- createFolds(balanced_data$Depression, k = 10, list = TRUE, returnTrain = FALSE)
+results <- data.frame()
+for (i in 1:nrow(param_grid)) {
+  current_cost <- param_grid$cost[i]
+  current_gamma <- param_grid$gamma[i]
+  
+  fold_aucs <- numeric(10)  
+  
+  for (fold in 1:10) {
+    
+    val_indices <- folds[[fold]]
+    train_indices <- setdiff(1:nrow(balanced_data), val_indices)
+    
+    train_data <- balanced_data[train_indices, ]
+    val_data <- balanced_data[val_indices, ]
+    
+    preProc <- preProcess(train_data[, continuous_vars, drop = FALSE], method = c("center", "scale"))
+    xtrain_cont_scaled <- predict(preProc, train_data[, continuous_vars, drop = FALSE])
+    x_val_cont_scaled <- predict(preProc, val_data[, continuous_vars, drop = FALSE])
+    
+    xtrain_scaled <- cbind(xtrain_cont_scaled, train_data[, categorical_vars])
+    x_val_scaled <- cbind(x_val_cont_scaled, val_data[, categorical_vars])
+    
+    xtrain_mat <- as.matrix(xtrain_scaled)
+    x_val_mat <- as.matrix(x_val_scaled)
+    ytrain_fold <- as.factor(train_data$Depression)
+    y_val_fold <- as.factor(val_data$Depression)
+    
+    svm_model <- svm(
+      x = xtrain_mat,
+      y = ytrain_fold,
+      kernel = "radial",
+      probability = TRUE,
+      class.weights = class_weights,  
+      cost = current_cost,
+      gamma = current_gamma
+    )
+    
+    val_probs <- attr(predict(svm_model, x_val_mat, probability = TRUE), "prob")[, "1"] 
+    
+    roc_obj <- roc(response = y_val_fold, predictor = val_probs, levels = levels(y_val_fold))
+    fold_aucs[fold] <- auc(roc_obj)
+  }
+  
+  mean_auc <- mean(fold_aucs)
+  
+  results <- rbind(results, data.frame(
+    cost = current_cost,
+    gamma = current_gamma,
+    auc = mean_auc
+  ))
+  
+  cat(sprintf("cost=%.3f, gamma=%.3f | Mean AUC=%.4f\n", current_cost, current_gamma, mean_auc))
+}
+results_sorted <- results[order(-results$auc), ]
+best_params_svm_balanced <- results_sorted[1, ]
+print(best_params_svm_balanced)
+set.seed(123)
+balanced_svm_model <- svm(
+  x = balanced_x_train_scaled,
+  y = as.factor(balanced_y_train),
+  kernel = "radial",
+  probability = TRUE,
+  class.weights = class_weights,
+  cost = best_params_svm_balanced$cost,
+  gamma = best_params_svm_balanced$gamma
+)
+svm_train_probs_balanced <- attr(predict(balanced_svm_model, balanced_x_train, probability = TRUE), "prob")[, 2]
+svm_test_probs_balanced <- attr(predict(balanced_svm_model, x_test, probability = TRUE), "prob")[, 2]
+svm_train_roc_balanced <- roc(balanced_y_train, svm_train_probs_balanced)
+svm_test_roc_balanced <- roc(y_test, svm_test_probs_balanced)
+
+
+##KNN
+###Imbalance data
+set.seed(123)
+print(table(data_simplify_train$Depression))
+ctrl <- trainControl(method = "cv",number = 10,classProbs = TRUE,summaryFunction = twoClassSummary  )
+k_grid <- expand.grid(k = seq(1, 70, by = 2))
+data_simplify_train$Depression <- factor(data_simplify_train$Depression,levels = c("0", "1"),labels = c("No", "Yes"))
+data_simplify_test$Depression <- factor(data_simplify_test$Depression,levels = c("0", "1"),labels = c("No", "Yes"))
+set.seed(123)
+knn_model <- train(Depression ~ ., data = data_simplify_train,method = "knn",trControl = ctrl,                 
+                   preProcess = c("center", "scale"),tuneGrid = k_grid,metric = "ROC")
+print(knn_model$bestTune)
+print(knn_model)
+knn_train_prob <- predict(knn_model, newdata = data_simplify_train, "prob")[, 2]
+knn_test_prob <- predict(knn_model, newdata = data_simplify_test, "prob")[, 2]
+knn_train_roc <- roc(response = data_simplify_train$Depression, predictor = knn_train_prob)
+knn_test_roc <- roc(response = data_simplify_test$Depression, predictor = knn_test_prob)
+###Balance data
+balanced_data$Depression <- factor(balanced_data$Depression,levels = c("0", "1"),labels = c("No", "Yes"))
+set.seed(123)
+knn_model_balanced <- train(Depression ~ .,data = balanced_data,method = "knn",trControl = ctrl,          
+                            preProcess = c("center", "scale"),tuneGrid = k_grid, metric = "ROC")
+print(knn_model_balanced$bestTune)
+print(knn_model_balanced)
+knn_train_prob_balanced <- predict(knn_model_balanced, newdata = balanced_data, "prob")[, 2]
+knn_test_prob_balanced <- predict(knn_model_balanced, newdata = data_simplify_test, "prob")[, 2]
+knn_train_roc_balanced <- roc(response = balanced_data$Depression, predictor = knn_train_prob_balanced)
+knn_test_roc_balanced <- roc(response = data_simplify_test$Depression, predictor = knn_test_prob_balanced)
+
+
+
+
+##XGBoost
+###Imbalance data
+data_simplify_test$Depression <- ifelse(data_simplify_test$Depression == "Yes", 1, 0)
+data_simplify_train$Depression <- ifelse(data_simplify_train$Depression == "Yes", 1, 0)
+dtrain <- xgb.DMatrix(
+  data = as.matrix(data_simplify_train[, -which(colnames(data_simplify_train) == "Depression")]),
+  label = data_simplify_train$Depression
+)
+dtest <- xgb.DMatrix(
+  data = as.matrix(data_simplify_test[, -which(colnames(data_simplify_test) == "Depression")]),
+  label = data_simplify_test$Depression
+)
+scale_pos_weight <- sum(data_simplify_train$Depression == 0) / sum(data_simplify_train$Depression == 1)
+max_depth_values <- c(3, 5, 7)
+eta_values <- c(0.01, 0.1, 0.3)
+best_auc <- 0
+for (max_depth in max_depth_values) {
+  for (eta in eta_values) {params <- list(objective = "binary:logistic",eval_metric = "auc",max_depth = max_depth,
+                                          eta = eta,subsample = 0.8,colsample_bytree = 0.8)
+  set.seed(123)
+  cv <- xgb.cv(params, dtrain, nrounds = 500, nfold = 10,early_stopping_rounds = 20, 
+               scale_pos_weight = scale_pos_weight,verbose = FALSE)
+  current_auc <- max(cv$evaluation_log$test_auc_mean)
+  if (current_auc > best_auc) {
+    best_auc <- current_auc
+    best_params <- params
+    best_nrounds <- cv$best_iteration}}}
+set.seed(123)
+xgb_model <- xgb.train(best_params, dtrain, best_nrounds, print_every_n = 10) 
+xgb_testpredprob <- predict(xgb_model, dtest)
+xgb_trainpredprob <- predict(xgb_model, dtrain)
+xgb_train_roc <- roc(data_simplify_train$Depression, xgb_trainpredprob)
+xgb_test_roc <- roc(data_simplify_test$Depression, xgb_testpredprob)
+#XGBoost
+balanced_data$Depression <- ifelse(balanced_data$Depression == "Yes", 1, 0)
+dbalanced <- xgb.DMatrix(
+  data = as.matrix(balanced_data[, -which(colnames(balanced_data) == "Depression")]),
+  label = balanced_data$Depression
+)
+scale_pos_weight <- sum(balanced_data$Depression == 0) / sum(balanced_data$Depression == 1)
+max_depth_values <- c(3, 5, 7)
+eta_values <- c(0.01, 0.1, 0.3)
+best_auc <- 0
+for (max_depth in max_depth_values) {
+  for (eta in eta_values) {params <- list(objective = "binary:logistic",eval_metric = "auc",max_depth = max_depth,
+                                          eta = eta,subsample = 0.8,colsample_bytree = 0.8)
+  set.seed(123)
+  cv <- xgb.cv(params, dbalanced, nrounds = 500, nfold = 10,early_stopping_rounds = 20, 
+               scale_pos_weight = scale_pos_weight,verbose = FALSE)
+  current_auc <- max(cv$evaluation_log$test_auc_mean)
+  if (current_auc > best_auc) {
+    best_auc <- current_auc
+    best_params <- params
+    best_nrounds <- cv$best_iteration}}}
+set.seed(123)
+xgb_model_balanced <- xgb.train(best_params, dbalanced, best_nrounds, print_every_n = 10) 
+xgb_testpredprob_balanced <- predict(xgb_model_balanced, dtest)
+xgb_trainpredprob_balanced <- predict(xgb_model_balanced, dbalanced)
+xgb_train_roc_balanced <- roc(balanced_data$Depression, xgb_trainpredprob_balanced)
+xgb_test_roc_balanced <- roc(data_simplify_test$Depression, xgb_testpredprob_balanced)
+
+
+
+##logistic regression model
+###Imbalance data
+data_simplify_test$Depression <- ifelse(data_simplify_test$Depression == 1, "Yes", "No")
+data_simplify_train$Depression <- ifelse(data_simplify_train$Depression == 1, "Yes", "No")
+set.seed(123) 
+ctrl <- trainControl(method = "cv",number = 10,savePredictions = "final",classProbs = TRUE,summaryFunction = twoClassSummary)
+model <- train(Depression ~ .,data = data_simplify_train,method = "glm",family = binomial,
+               trControl = ctrl,metric = "ROC")
+cv_results <- model$results
+print(cv_results)
+lr_prob_train <- predict(model, data_simplify_train, type = "prob")[ ,2]
+lr_prob_test <- predict(model, data_simplify_test, type = "prob")[ ,2]
+lr_train_roc <- roc(response = data_simplify_train$Depression, predictor = lr_prob_train)
+lr_test_roc <- roc(response = data_simplify_test$Depression, predictor = lr_prob_test)
+###Balance data
+balanced_data$Depression <- ifelse(balanced_data$Depression == 1, "Yes", "No")
+set.seed(123) 
+ctrl <- trainControl(method = "cv",number = 10,savePredictions = "final",classProbs = TRUE,summaryFunction = twoClassSummary)
+model_balanced <- train(Depression ~ .,data = balanced_data,method = "glm",family = binomial, 
+                        trControl = ctrl,metric = "ROC")
+cv_results_balanced <- model_balanced$results
+print(cv_results_balanced)
+lr_prob_train_balanced <- predict(model_balanced, balanced_data, type = "prob")[ ,2]
+lr_prob_test_balanced <- predict(model_balanced, data_simplify_test, type = "prob")[ ,2]
+lr_train_roc_balanced <- roc(response = balanced_data$Depression, predictor = lr_prob_train_balanced)
+lr_test_roc_balanced <- roc(response = data_simplify_test$Depression, predictor = lr_prob_test_balanced)
+
+
+
+
+##ROC curves of 10 models
+train_rocs <- list(
+  RF = rf_train_roc,
+  XGBoost = xgb_train_roc,
+  SVM = svm_train_roc,
+  KNN = knn_train_roc,
+  LR = lr_train_roc,
+  RF_SM = rf_train_balanced_roc,
+  XGBoost_SM = xgb_train_roc_balanced,
+  SVM_SM = svm_train_roc_balanced,
+  KNN_SM = knn_train_roc_balanced,
+  LR_SM = lr_train_roc_balanced
+)
+test_rocs <- list(
+  RF = rf_test_roc,
+  XGBoost = xgb_test_roc,
+  SVM = svm_test_roc,
+  KNN = knn_test_roc,
+  LR = lr_test_roc,
+  RF_SM = rf_test_balanced_roc,
+  XGBoost_SM = xgb_test_roc_balanced,
+  SVM_SM = svm_test_roc_balanced,
+  KNN_SM = knn_test_roc_balanced,
+  LR_SM = lr_test_roc_balanced
+)
+model_colors <- c(
+  RF          = "#4E79A7",  
+  XGBoost     = "#F28E2B",  
+  SVM         = "#E15759",  
+  KNN         = "#76B7B2",  
+  LR          = "#59A14F",  
+  RF_SM       = "#EDC948",  
+  XGBoost_SM  = "#B07AA1",  
+  SVM_SM      = "#FF9DA7",  
+  KNN_SM      = "#9C755F",  
+  LR_SM       = "#BAB0AC"   
+)
+create_roc_plot <- function(roc_list) {
+  roc_data <- imap_dfr(roc_list, function(roc_obj, model_name) {
+    tibble(
+      Model = model_name,
+      FPR = 1 - roc_obj$specificities,
+      TPR = roc_obj$sensitivities,
+      AUC = auc(roc_obj) %>% round(3)
+    )
+  })
+  auc_labels <- roc_data %>%
+    distinct(Model, AUC) %>%  
+    mutate(Label = paste0(Model, " = ", AUC))
+  
+
+  label_y <- seq(0.4, 0.002, length.out = 10)
+  
+  ggplot(roc_data, aes(x = FPR, y = TPR, color = Model)) +
+    geom_line(size = 0.8) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+    scale_color_manual(values = model_colors) +
+    coord_equal() +
+    theme_bw() +
+    labs(x = "1 - Specificity",
+         y = "Sensitivity") +
+    theme(legend.position = "none",
+          plot.tag = element_text(size = 12, face = "bold", colour = "black"),  
+          plot.tag.position = c(0, 1.05),
+          plot.title = element_text(hjust = 0.5)) +
+    annotate("text", 
+             x = rep(0.6, 10), y = label_y,
+             label = auc_labels$Label,
+             color = model_colors[auc_labels$Model],
+             hjust = 0,
+             size = 3,
+             fontface = "bold")
+}
+ROC_train_plot <- create_roc_plot(train_rocs)
+ROC_test_plot <- create_roc_plot(test_rocs)
+print(ROC_train_plot)
+print(ROC_test_plot)
+
+
+
+
+##LR
+###calibration curve
+data_simplify_test <- data_simplify_test %>% mutate(across(c(Depression), as.factor))
+calib_data_test <- data.frame(Observed = as.numeric(data_simplify_test$Depression)-1,
+                              Predicted = lr_prob_test)
+calib_test <- val.prob(calib_data_test$Predicted, calib_data_test$Observed)
+###Decision curve
+LR <- lr_prob_test
+test_dca_result <- dca(Depression ~ LR, data = data_simplify_test)
+DCA_plot <- plot(test_dca_result, colorize = TRUE) + theme_minimal() +
+  theme(panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.5))
+print(DCA_plot)
+
+
+###line graph
+data_simplify <- data_OBS_log[, c("DII","Health_condition",
+                                  "Seen_mental_health_professional", "Trouble_sleeping",
+                                  "Marital_status", "Gender","Alcohol_intake","Smoking",
+                                  "Depression")]
+set.seed(123)
+trains <- createDataPartition(y = data_simplify$Depression, p = 0.7, list = F)
+data_simplify_train <- data_simplify[trains, ]
+data_simplify_test <- data_simplify[-trains, ]
+ddist <- datadist(data_simplify)
+options(datadist = "ddist")
+model_lrm <- lrm(Depression ~ Trouble_sleeping + Health_condition + Seen_mental_health_professional + 
+                   DII + Smoking + Marital_status + Gender + Alcohol_intake, 
+                 data = data_simplify_train,
+                 x = TRUE, y = TRUE 
+)
+nom <- nomogram(model_lrm, 
+                fun = plogis,
+                funlabel = "Depression Risk")
+plot(nom,
+     xfrac = 0.25,    
+     cex.var = 0.8,   
+     cex.axis = 0.7,  
+     lmgp = 0.1       
+)
+
+str(data_simplify_train)
+
+##SHAP interpretation
+pfun <- function(object, newdata) {predict(object, newdata = newdata, type = "fitted")}
+X <- data_simplify_train[, names(data_simplify_train) != "Depression"]
+shap <- explain(model_lrm,X = X,nsim = 50,pred_wrapper = pfun)
+shap_plots <- shapviz(shap, X = X)
+##Global explanation
+sv_importance(shap_plots, kind = "beeswarm") + theme_bw() + theme(
+  axis.title.y = element_text(face = "bold", size = 12),
+  axis.text.y = element_text(face = "bold", size = 10))
+sv_importance(shap_plots) + theme_bw() + theme(
+  axis.title.y = element_text(face = "bold", size = 12),
+  axis.text.y = element_text(face = "bold", size = 10))
+sv_dependence(shap_plots, v = "DII")+theme_bw()
+
+##Individual Force Plot
+positive_samples <- which(data_simplify_train$Depression == "Yes")  
+negative_samples <- which(data_simplify_train$Depression == "No")  
+set.seed(22)  
+selected_id <- sample(positive_samples, 1)
+sv_force(shap_plots, row_id = selected_id) + theme_bw()
+set.seed(123)  
+selected_id <- sample(negative_samples, 1)
+sv_force(shap_plots, row_id = selected_id) + theme_bw()
