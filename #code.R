@@ -338,16 +338,6 @@ table(data_simplify_test$Depression)
 str(data_simplify_train)
 ##Sample size calculation
 pmsampsize(type = "b",csrsquared = 0.072,parameters = 12,prevalence = 0.1,seed = 123)
-##upsampling
-set.seed(123)
-smote_result <- SMOTE(X = data_simplify_train[, -13],target = data_simplify_train$Depression,
-                      K = 5,dup_size = 3)
-balanced_data <- smote_result$data
-colnames(balanced_data)[13] <- "Depression"
-table(balanced_data$Depression)
-balanced_data <- balanced_data %>% mutate(across(c(Depression), as.factor))
-table(data_OBS$Depression)
-
 
 ##Random Forests
 ###Imbalance data
@@ -386,10 +376,10 @@ for (i in 1:nrow(param_grid)) {
     fold_aucs[fold] <- auc(roc_obj)
   }
   
-
+  
   mean_auc <- mean(fold_aucs)
   
-
+  
   results <- rbind(results, data.frame(
     mtry = current_mtry,
     ntree = current_ntree,
@@ -410,60 +400,64 @@ rf.OBS.testprob <- predict(rf.OBS.2, newdata = data_simplify_test, type = "prob"
 rf_test_roc <- roc(response = data_simplify_test$Depression, predictor = rf.OBS.testprob)
 ###Balance data
 set.seed(123)
-param_grid <- expand.grid(mtry = 3:5,ntree = seq(200, 500, by = 50))
-folds <- createFolds(balanced_data$Depression,k = 10,list = TRUE,returnTrain = FALSE)
+param_grid <- expand.grid(mtry = 3:5, ntree = seq(200, 500, by = 50))
+folds <- createFolds(data_simplify_train$Depression, k = 10, list = TRUE, returnTrain = FALSE)
 results <- data.frame()
 for (i in 1:nrow(param_grid)) {
   current_mtry <- param_grid$mtry[i]
   current_ntree <- param_grid$ntree[i]
-  
-  fold_aucs <- numeric(10)  
-  
+  fold_aucs <- numeric(10)
   for (fold in 1:10) {
     val_indices <- folds[[fold]]
-    train_data <- balanced_data[-val_indices, ]
-    val_data <- balanced_data[val_indices, ]
-    
-
+    raw_train <- data_simplify_train[-val_indices, ]
+    val_data <- data_simplify_train[val_indices, ]
+    smote_data <- SMOTE(
+      X = raw_train[, -which(names(raw_train) == "Depression")],
+      target = raw_train$Depression,
+      K = 5,
+      dup_size = 3
+    )
+    balanced_train <- smote_data$data
+    colnames(balanced_train)[ncol(balanced_train)] <- "Depression"  
+    balanced_train <- balanced_train %>% mutate(across(c(Depression), as.factor))
     model <- randomForest(
       Depression ~ .,
-      data = train_data,
+      data = balanced_train,
       mtry = current_mtry,
       ntree = current_ntree
     )
-    
-
-    pred_probs <- predict(model, val_data, type = "prob")[, 2]  
-    
-
+    pred_probs <- predict(model, val_data, type = "prob")[, 2]
     roc_obj <- roc(
       response = val_data$Depression,
       predictor = pred_probs,
-      levels = levels(val_data$Depression) 
+      levels = levels(val_data$Depression)
     )
     fold_aucs[fold] <- auc(roc_obj)
   }
-  
-
   mean_auc <- mean(fold_aucs)
   
-
   results <- rbind(results, data.frame(
     mtry = current_mtry,
     ntree = current_ntree,
     auc = mean_auc
   ))
-  
-  cat(sprintf("mtry=%d, ntree=%d | Mean AUC=%.4f\n", current_mtry, current_ntree, mean_auc))
-}
+  cat(sprintf("mtry=%d, ntree=%d | Mean AUC=%.4f\n", current_mtry, current_ntree, mean_auc))}
 results_sorted <- results[order(-results$auc), ]
 best_params_RF_balanced <- results_sorted[1, ]
 print(best_params_RF_balanced)
+final_smote <- SMOTE(X = data_simplify_train[, -which(names(data_simplify_train) == "Depression")],
+  target = data_simplify_train$Depression,K = 5,dup_size = 3)
+balanced_full_train <- final_smote$data
+colnames(balanced_full_train)[ncol(balanced_full_train)] <- "Depression"
+balanced_full_train <- balanced_full_train %>% mutate(across(c(Depression), as.factor))
 set.seed(123)
-rf.OBS.2_balanced <- randomForest(Depression ~ .,data = balanced_data,mtry = best_params_RF$mtry,ntree = best_params_RF$ntree)
-print(rf.OBS.2_balanced)
-rf.OBS_balanced_trainprob <- predict(rf.OBS.2_balanced, newdata = balanced_data, type = "prob")[, 2]
-rf_train_balanced_roc <- roc(response = balanced_data$Depression, predictor = rf.OBS_balanced_trainprob)
+rf.OBS.2_balanced <- randomForest(
+  Depression ~ .,
+  data = balanced_full_train,
+  mtry = best_params_RF_balanced$mtry,
+  ntree = best_params_RF_balanced$ntree)
+rf.OBS_balanced_trainprob <- predict(rf.OBS.2_balanced, newdata = balanced_full_train, type = "prob")[, 2]
+rf_train_balanced_roc <- roc(response = balanced_full_train$Depression, predictor = rf.OBS_balanced_trainprob)
 rf.OBS_balanced_testprob <- predict(rf.OBS.2_balanced, newdata = data_simplify_test, type = "prob")[, 2]
 rf_test_balanced_roc <- roc(response = data_simplify_test$Depression, predictor = rf.OBS_balanced_testprob)
 
@@ -552,62 +546,67 @@ continuous_vars <- c("DII")
 categorical_vars <- c("Alcohol_intakeNormal","Alcohol_intakeOver","Alcohol_intakePast","GenderMale","SmokingNow","SmokingPast",
                       "Marital_statusNever_married","Marital_status_Widowed_Divorced_Separated",
                       "Health_conditionYes","Trouble_sleepingYes","Seen_mental_health_professionalYes")
-preProc <- preProcess(balanced_data[, continuous_vars, drop = FALSE], method = c("center", "scale"))
-balanced_x_train_cont_scaled <- predict(preProc, balanced_data[, continuous_vars, drop = FALSE])
-balanced_x_train_scaled <- cbind(balanced_x_train_cont_scaled, balanced_data[, categorical_vars])
-balanced_x_train <- as.matrix(balanced_x_train_scaled)
-balanced_y_train <- balanced_data$Depression
-class_weights <- c("1" = 1, "0" = 2)
+preProc <- preProcess(data_simplify_train[, continuous_vars, drop = FALSE], method = c("center", "scale"))
+x_train_cont_scaled <- predict(preProc, data_simplify_train[, continuous_vars, drop = FALSE])
+x_test_cont_scaled <- predict(preProc, data_simplify_test[, continuous_vars, drop = FALSE])
+x_train_scaled <- cbind(x_train_cont_scaled, data_simplify_train[, categorical_vars])
+x_test_scaled <- cbind(x_test_cont_scaled, data_simplify_test[, categorical_vars])
+x_train <- as.matrix(x_train_scaled)
+x_test <- as.matrix(x_test_scaled)
+y_train <- data_simplify_train$Depression
+y_test <- data_simplify_test$Depression
+class_weights <- c("1" = 1, "0" = 8) 
 cost_values <- 10^seq(-1, 2, length = 5)  
 gamma_values <- 10^seq(-3, 1, length = 5) 
 param_grid <- expand.grid(cost = cost_values, gamma = gamma_values)
 set.seed(123)
-folds <- createFolds(balanced_data$Depression, k = 10, list = TRUE, returnTrain = FALSE)
+folds <- createFolds(data_simplify_train$Depression, k = 10, list = TRUE, returnTrain = FALSE)
 results <- data.frame()
+
 for (i in 1:nrow(param_grid)) {
   current_cost <- param_grid$cost[i]
   current_gamma <- param_grid$gamma[i]
   
-  fold_aucs <- numeric(10)  
+  fold_aucs <- numeric(10)
   
   for (fold in 1:10) {
-    
     val_indices <- folds[[fold]]
-    train_indices <- setdiff(1:nrow(balanced_data), val_indices)
-    
-    train_data <- balanced_data[train_indices, ]
-    val_data <- balanced_data[val_indices, ]
-    
-    preProc <- preProcess(train_data[, continuous_vars, drop = FALSE], method = c("center", "scale"))
-    xtrain_cont_scaled <- predict(preProc, train_data[, continuous_vars, drop = FALSE])
+    train_indices <- setdiff(1:nrow(data_simplify_train), val_indices)
+    raw_train <- data_simplify_train[train_indices, ]
+    val_data <- data_simplify_train[val_indices, ]
+    preProc <- preProcess(raw_train[, continuous_vars, drop = FALSE], method = c("center", "scale"))
+    xtrain_cont_scaled <- predict(preProc, raw_train[, continuous_vars, drop = FALSE])
     x_val_cont_scaled <- predict(preProc, val_data[, continuous_vars, drop = FALSE])
-    
-    xtrain_scaled <- cbind(xtrain_cont_scaled, train_data[, categorical_vars])
+    train_for_smote <- cbind(xtrain_cont_scaled, raw_train[, categorical_vars])
+    train_for_smote$Depression <- raw_train$Depression
+    smote_data <- SMOTE(
+      X = train_for_smote[, -which(names(train_for_smote) == "Depression")],
+      target = train_for_smote$Depression,
+      K = 5,
+      dup_size = 3
+    )
+    balanced_train <- smote_data$data 
+    colnames(balanced_train)[ncol(balanced_train)] <- "Depression" 
+    balanced_train <- balanced_train %>% mutate(Depression = as.factor(Depression))  
+    xtrain_smote <- as.matrix(balanced_train[, -which(names(balanced_train) == "Depression")])
+    ytrain_smote <- balanced_train$Depression
     x_val_scaled <- cbind(x_val_cont_scaled, val_data[, categorical_vars])
-    
-    xtrain_mat <- as.matrix(xtrain_scaled)
     x_val_mat <- as.matrix(x_val_scaled)
-    ytrain_fold <- as.factor(train_data$Depression)
     y_val_fold <- as.factor(val_data$Depression)
-    
     svm_model <- svm(
-      x = xtrain_mat,
-      y = ytrain_fold,
+      x = xtrain_smote,
+      y = ytrain_smote,
       kernel = "radial",
       probability = TRUE,
-      class.weights = class_weights,  
+      class.weights = class_weights,
       cost = current_cost,
       gamma = current_gamma
     )
-    
     val_probs <- attr(predict(svm_model, x_val_mat, probability = TRUE), "prob")[, "1"] 
-    
     roc_obj <- roc(response = y_val_fold, predictor = val_probs, levels = levels(y_val_fold))
     fold_aucs[fold] <- auc(roc_obj)
   }
-  
   mean_auc <- mean(fold_aucs)
-  
   results <- rbind(results, data.frame(
     cost = current_cost,
     gamma = current_gamma,
@@ -619,21 +618,35 @@ for (i in 1:nrow(param_grid)) {
 results_sorted <- results[order(-results$auc), ]
 best_params_svm_balanced <- results_sorted[1, ]
 print(best_params_svm_balanced)
+full_train_for_smote <- cbind(x_train_cont_scaled, data_simplify_train[, categorical_vars])
+full_train_for_smote$Depression <- data_simplify_train$Depression
+final_smote <- SMOTE(
+  X = full_train_for_smote[, -which(names(full_train_for_smote) == "Depression")],
+  target = full_train_for_smote$Depression,
+  K = 5,
+  dup_size = 3
+)
+balanced_full_train <- final_smote$data 
+colnames(balanced_full_train)[ncol(balanced_full_train)] <- "Depression"  
+balanced_full_train <- balanced_full_train %>% mutate(Depression = as.factor(Depression))  
+
+x_train_final <- as.matrix(balanced_full_train[, -which(names(balanced_full_train) == "Depression")])
+y_train_final <- balanced_full_train$Depression
+
 set.seed(123)
-balanced_svm_model <- svm(
-  x = balanced_x_train_scaled,
-  y = as.factor(balanced_y_train),
+svm_model_balanced <- svm(
+  x = x_train_final,
+  y = y_train_final,
   kernel = "radial",
   probability = TRUE,
   class.weights = class_weights,
   cost = best_params_svm_balanced$cost,
   gamma = best_params_svm_balanced$gamma
 )
-svm_train_probs_balanced <- attr(predict(balanced_svm_model, balanced_x_train, probability = TRUE), "prob")[, 2]
-svm_test_probs_balanced <- attr(predict(balanced_svm_model, x_test, probability = TRUE), "prob")[, 2]
-svm_train_roc_balanced <- roc(balanced_y_train, svm_train_probs_balanced)
+svm_train_probs_balanced <- attr(predict(svm_model_balanced, x_train_final, probability = TRUE), "prob")[, 2]
+svm_test_probs_balanced <- attr(predict(svm_model_balanced, x_test, probability = TRUE), "prob")[, 2]
+svm_train_roc_balanced <- roc(y_train_final, svm_train_probs_balanced)
 svm_test_roc_balanced <- roc(y_test, svm_test_probs_balanced)
-
 
 ##KNN
 ###Imbalance data
@@ -653,24 +666,62 @@ knn_test_prob <- predict(knn_model, newdata = data_simplify_test, "prob")[, 2]
 knn_train_roc <- roc(response = data_simplify_train$Depression, predictor = knn_train_prob)
 knn_test_roc <- roc(response = data_simplify_test$Depression, predictor = knn_test_prob)
 ###Balance data
-balanced_data$Depression <- factor(balanced_data$Depression,levels = c("0", "1"),labels = c("No", "Yes"))
+categorical_vars <- c("Alcohol_intakeNormal","Alcohol_intakeOver","Alcohol_intakePast","GenderMale","SmokingNow","SmokingPast",
+                      "Marital_statusNever_married","Marital_status_Widowed_Divorced_Separated",
+                      "Health_conditionYes","Trouble_sleepingYes","Seen_mental_health_professionalYes")
+data_simplify_train$Depression <- factor(data_simplify_train$Depression,levels = c("No", "Yes"), labels = c("0", "1"))  
+data_simplify_test$Depression <- factor(data_simplify_test$Depression,levels = c("No", "Yes"),labels = c("0", "1"))
+k_grid <- expand.grid(k = seq(1, 70, by = 2))
 set.seed(123)
-knn_model_balanced <- train(Depression ~ .,data = balanced_data,method = "knn",trControl = ctrl,          
-                            preProcess = c("center", "scale"),tuneGrid = k_grid, metric = "ROC")
-print(knn_model_balanced$bestTune)
-print(knn_model_balanced)
-knn_train_prob_balanced <- predict(knn_model_balanced, newdata = balanced_data, "prob")[, 2]
-knn_test_prob_balanced <- predict(knn_model_balanced, newdata = data_simplify_test, "prob")[, 2]
-knn_train_roc_balanced <- roc(response = balanced_data$Depression, predictor = knn_train_prob_balanced)
-knn_test_roc_balanced <- roc(response = data_simplify_test$Depression, predictor = knn_test_prob_balanced)
+folds <- createFolds(data_simplify_train$Depression, k = 10, list = TRUE)
+results <- data.frame(k = integer(), auc = numeric())
+for (k_val in k_grid$k) {
+  fold_aucs <- numeric(10)
+  for (fold in 1:10) {
+    val_indices <- folds[[fold]]
+    raw_train <- data_simplify_train[-val_indices, ]
+    val_data <- data_simplify_train[val_indices, ]
+    preProc <- preProcess(raw_train, method = c("center", "scale"))
+    train_processed <- predict(preProc, raw_train)
+    smote_data <- SMOTE(X = train_processed[, -which(names(train_processed) == "Depression")],
+                        target = train_processed$Depression,K = 5,dup_size = 3)
+    balanced_train <- smote_data$data 
+    colnames(balanced_train)[ncol(balanced_train)] <- "Depression" 
+    balanced_train <- balanced_train %>% 
+      mutate(Depression = factor(Depression, levels = c("0", "1"))) %>%
+      mutate(across(all_of(categorical_vars), ~ round(.x))) 
+    val_processed <- predict(preProc, val_data)
+    knn_model <- knn3(Depression ~ .,data = balanced_train,k = k_val)
+    val_probs <- predict(knn_model, val_processed, type = "prob")[, "1"]
+    roc_obj <- roc(response = val_data$Depression, predictor = val_probs)
+    fold_aucs[fold] <- auc(roc_obj)}
+  results <- rbind(results, data.frame(k = k_val, auc = mean(fold_aucs)))
+  cat(sprintf("k=%d | Mean AUC=%.4f\n", k_val, mean(fold_aucs)))}
+best_k <- results[which.max(results$auc), "k"]
+preProc_full <- preProcess(data_simplify_train, method = c("center", "scale"))
+train_full_processed <- predict(preProc_full, data_simplify_train)
+final_smote <- SMOTE(
+  X = train_full_processed[, -which(names(train_full_processed) == "Depression")],
+  target = train_full_processed$Depression,K = 5,dup_size = 3)
+balanced_full <- final_smote$data
+colnames(balanced_full)[ncol(balanced_full)] <- "Depression"  
+balanced_full <- balanced_full %>% 
+  mutate(Depression = factor(Depression, levels = c("0", "1"))) %>%
+  mutate(across(all_of(categorical_vars), ~ round(.x)))
+knn_final <- knn3(Depression ~ .,data = balanced_full,k = best_k)
+test_processed <- predict(preProc_full, data_simplify_test)
+knn_train_prob_balanced <- predict(knn_final, train_full_processed, type = "prob")[, "1"]
+knn_test_prob_balanced <- predict(knn_final, test_processed, type = "prob")[, "1"]
+knn_train_roc_balanced <- roc(response = data_simplify_train$Depression, predictor = knn_train_prob)
+knn_test_roc_balanced <- roc(response = data_simplify_test$Depression, predictor = knn_test_prob)
 
 
 
 
 ##XGBoost
 ###Imbalance data
-data_simplify_test$Depression <- ifelse(data_simplify_test$Depression == "Yes", 1, 0)
-data_simplify_train$Depression <- ifelse(data_simplify_train$Depression == "Yes", 1, 0)
+data_simplify_test$Depression <- ifelse(data_simplify_test$Depression == "1", 1, 0)
+data_simplify_train$Depression <- ifelse(data_simplify_train$Depression == "1", 1, 0)
 dtrain <- xgb.DMatrix(
   data = as.matrix(data_simplify_train[, -which(colnames(data_simplify_train) == "Depression")]),
   label = data_simplify_train$Depression
@@ -700,34 +751,99 @@ xgb_testpredprob <- predict(xgb_model, dtest)
 xgb_trainpredprob <- predict(xgb_model, dtrain)
 xgb_train_roc <- roc(data_simplify_train$Depression, xgb_trainpredprob)
 xgb_test_roc <- roc(data_simplify_test$Depression, xgb_testpredprob)
-#XGBoost
-balanced_data$Depression <- ifelse(balanced_data$Depression == "Yes", 1, 0)
-dbalanced <- xgb.DMatrix(
-  data = as.matrix(balanced_data[, -which(colnames(balanced_data) == "Depression")]),
-  label = balanced_data$Depression
-)
-scale_pos_weight <- sum(balanced_data$Depression == 0) / sum(balanced_data$Depression == 1)
+##Balanced data
 max_depth_values <- c(3, 5, 7)
 eta_values <- c(0.01, 0.1, 0.3)
 best_auc <- 0
-for (max_depth in max_depth_values) {
-  for (eta in eta_values) {params <- list(objective = "binary:logistic",eval_metric = "auc",max_depth = max_depth,
-                                          eta = eta,subsample = 0.8,colsample_bytree = 0.8)
-  set.seed(123)
-  cv <- xgb.cv(params, dbalanced, nrounds = 500, nfold = 10,early_stopping_rounds = 20, 
-               scale_pos_weight = scale_pos_weight,verbose = FALSE)
-  current_auc <- max(cv$evaluation_log$test_auc_mean)
-  if (current_auc > best_auc) {
-    best_auc <- current_auc
-    best_params <- params
-    best_nrounds <- cv$best_iteration}}}
+best_params <- list()
+best_nrounds <- 0
 set.seed(123)
-xgb_model_balanced <- xgb.train(best_params, dbalanced, best_nrounds, print_every_n = 10) 
-xgb_testpredprob_balanced <- predict(xgb_model_balanced, dtest)
-xgb_trainpredprob_balanced <- predict(xgb_model_balanced, dbalanced)
-xgb_train_roc_balanced <- roc(balanced_data$Depression, xgb_trainpredprob_balanced)
-xgb_test_roc_balanced <- roc(data_simplify_test$Depression, xgb_testpredprob_balanced)
+folds <- createFolds(data_simplify_train$Depression, k = 10, list = TRUE)
+for (max_depth in max_depth_values) {
+  for (eta in eta_values) {
+    fold_aucs <- numeric(10)
+    for (fold in 1:10) {
+      val_indices <- folds[[fold]]
+      raw_train <- data_simplify_train[-val_indices, ]
+      val_data <- data_simplify_train[val_indices, ]
+      smote_data <- SMOTE(
+        X = raw_train[, -which(names(raw_train) == "Depression")],
+        target = raw_train$Depression,
+        K = 5,
+        dup_size = 3
+      )
+      balanced_train <- smote_data$data       
+      colnames(balanced_train)[ncol(balanced_train)] <- "Depression"  
+      balanced_train <- balanced_train %>%
+        mutate(Depression = as.numeric(Depression)) 
+      dtrain_smote <- xgb.DMatrix(
+        data = as.matrix(balanced_train[, -which(names(balanced_train) == "Depression")]),
+        label = balanced_train$Depression
+      )
+      
+      dval <- xgb.DMatrix(
+        data = as.matrix(val_data[, -which(names(val_data) == "Depression")]),
+        label = val_data$Depression
+      )
+      params <- list(
+        objective = "binary:logistic",
+        eval_metric = "auc",
+        max_depth = max_depth,
+        eta = eta,
+        subsample = 0.8,
+        colsample_bytree = 0.8
+      )
+      set.seed(123)
+      model <- xgb.train(
+        params,
+        dtrain_smote,
+        nrounds = 500,
+        early_stopping_rounds = 20,
+        watchlist = list(val = dval),
+        verbose = 0
+      )
+      fold_aucs[fold] <- model$best_score
+    }
+    current_auc <- mean(fold_aucs)
+    if (current_auc > best_auc) {
+      best_auc <- current_auc
+      best_params_balanced <- params
+      best_nrounds_balanced <- which.max(model$evaluation_log$val_auc)
+    }
+  }
+}
+final_smote <- SMOTE(
+  X = data_simplify_train[, -which(names(data_simplify_train) == "Depression")],
+  target = data_simplify_train$Depression,
+  K = 5,
+  dup_size = 3
+)
 
+balanced_full_train <- final_smote$data       
+colnames(balanced_full_train)[ncol(balanced_full_train)] <- "Depression"  
+balanced_full_train <- balanced_full_train %>%
+  mutate(Depression = as.numeric(Depression)) 
+
+dtrain_final <- xgb.DMatrix(
+  data = as.matrix(balanced_full_train[, -which(names(balanced_full_train) == "Depression")]),
+  label = balanced_full_train$Depression
+)
+dtest <- xgb.DMatrix(
+  data = as.matrix(data_simplify_test[, -which(names(data_simplify_test) == "Depression")]),
+  label = data_simplify_test$Depression
+)
+
+set.seed(123)
+xgb_model_balanced <- xgb.train(
+  best_params_balanced,
+  dtrain_final,
+  nrounds = best_nrounds_balanced,
+  print_every_n = 10
+)
+xgb_testpredprob_balanced <- predict(xgb_model_balanced, dtest)
+xgb_trainpredprob_balanced <- predict(xgb_model_balanced, dtrain_final)
+xgb_train_roc_balanced <- roc(balanced_full_train$Depression, xgb_trainpredprob_balanced)
+xgb_test_roc_balanced <- roc(data_simplify_test$Depression, xgb_testpredprob_balanced)
 
 
 ##logistic regression model
@@ -745,6 +861,13 @@ lr_prob_test <- predict(model, data_simplify_test, type = "prob")[ ,2]
 lr_train_roc <- roc(response = data_simplify_train$Depression, predictor = lr_prob_train)
 lr_test_roc <- roc(response = data_simplify_test$Depression, predictor = lr_prob_test)
 ###Balance data
+#upsampling
+data_simplify_train$Depression <- ifelse(data_simplify_train$Depression == "Yes", 1, 0)
+set.seed(123)
+smote_result <- SMOTE(X = data_simplify_train[, -13],target = data_simplify_train$Depression,
+                      K = 5,dup_size = 3)
+balanced_data <- smote_result$data
+colnames(balanced_data)[13] <- "Depression"
 balanced_data$Depression <- ifelse(balanced_data$Depression == 1, "Yes", "No")
 set.seed(123) 
 ctrl <- trainControl(method = "cv",number = 10,savePredictions = "final",classProbs = TRUE,summaryFunction = twoClassSummary)
@@ -756,7 +879,6 @@ lr_prob_train_balanced <- predict(model_balanced, balanced_data, type = "prob")[
 lr_prob_test_balanced <- predict(model_balanced, data_simplify_test, type = "prob")[ ,2]
 lr_train_roc_balanced <- roc(response = balanced_data$Depression, predictor = lr_prob_train_balanced)
 lr_test_roc_balanced <- roc(response = data_simplify_test$Depression, predictor = lr_prob_test_balanced)
-
 
 
 
@@ -810,7 +932,7 @@ create_roc_plot <- function(roc_list) {
     distinct(Model, AUC) %>%  
     mutate(Label = paste0(Model, " = ", AUC))
   
-
+  
   label_y <- seq(0.4, 0.002, length.out = 10)
   
   ggplot(roc_data, aes(x = FPR, y = TPR, color = Model)) +
